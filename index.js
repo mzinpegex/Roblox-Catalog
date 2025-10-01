@@ -2,24 +2,62 @@ import axios from "axios";
 import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import compression from "compression";
+import rateLimit from "express-rate-limit"
+import LRU from "lru-cache"
+import axiosRetry from "axios-retry"
+import { cache } from "react";
+import { detail } from "@primeuix/themes/aura/toast";
 
 dotenv.config();
 const app = express();
-app.use(express.json());
-app.use(cors({origin: process.env.TRUSTED_FRONTEND}))
 
+app.use(helmet());
+app.use(compression());
+app.use(express.json());
+app.use(cors({origin: process.env.TRUSTED_FRONTEND || "*"}));
+
+const limiter = rateLimit({
+    windowMs: 15 * 1000 * 60,
+    max: 150,
+    standardHeaders: true,
+    legacyHeaders: true,
+})
+app.use(limiter);
+
+const axios_instance = axios.create({timeout: 8000});
+axiosRetry(axios_instance, {retries: 2, retryDelay: axiosRetry.exponentialDelay});
+
+const catalog_url = `https://catalog.roblox.com/v1/search/items/details`;
 const API_KEY = process.env.API_KEY;
 
-app.get("/assets", async(req, res) => {
+function cacheKey(req) {
+    const qs = Object.keys(req.query).sort().map(k => `${k}=${req.query[k]}`).join("&");
+    return `${req.path}?${qs}`;
+}
+
+app.get("/catalog", async(req, res) => {
     try {
-        const response = await axios.get(`https://apis.roblox.com/oauth/v1/credentials`, {
-            headers: {
-                "x-api-key": API_KEY,
-            },
+        const key = cacheKey(req);
+        const cached = cache.get(key);
+
+        if (cached) return res.json({cached: true, ...cached});
+
+        const response = await axios_instance.get(catalog_url, {
+            params: req.query,
         });
+
+        const payload = {cached: false, source: "catalog.roblox.com", data: response.data};
+
+        cache.set(key, payload);
+        res.json(payload);
     } catch(err) {
-        res.status(500).json({error: err.message})
+        console.error("Error proxy: ", err.response?.data || err.message)
+        const status = err.response?.status || 500;
+        res.status(status).json({error: "Cant access catalog", details: err.response?.data || err.message});
     }
 });
 
-app.listen(3000, () => console.log("porta 3000"))
+const port = process.env.PORT
+app.listen(port, () => console.log(`Proxy seguro rodando em http://localhost:${port}`))
