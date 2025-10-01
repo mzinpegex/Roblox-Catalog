@@ -1,17 +1,17 @@
 import axios from "axios";
 import dotenv from "dotenv";
-import express from "express";
+import express, { json } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
 import rateLimit from "express-rate-limit"
-import LRU from "lru-cache"
+import Redis from "ioredis"
 import axiosRetry from "axios-retry"
 import { cache } from "react";
-import { detail } from "@primeuix/themes/aura/toast";
 
 dotenv.config();
 const app = express();
+const redis = new Redis()
 
 app.use(helmet());
 app.use(compression());
@@ -40,9 +40,10 @@ function cacheKey(req) {
 app.get("/catalog", async(req, res) => {
     try {
         const key = cacheKey(req);
-        const cached = cache.get(key);
+        const cached = await redis.get(key);
 
-        if (cached) return res.json({cached: true, ...cached});
+        if (cached) return res.json(JSON.parse(cached));
+        await redis.set(key, JSON.stringify(payload), "EX", process.env.CACHE_TTL_SECONDS)
 
         const response = await axios_instance.get(catalog_url, {
             params: req.query,
@@ -50,7 +51,6 @@ app.get("/catalog", async(req, res) => {
 
         const payload = {cached: false, source: "catalog.roblox.com", data: response.data};
 
-        cache.set(key, payload);
         res.json(payload);
     } catch(err) {
         console.error("Error proxy: ", err.response?.data || err.message)
